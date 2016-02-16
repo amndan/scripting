@@ -1,0 +1,914 @@
+From 48c604468a6a74d4e2dc5d635fc5ee9d2452299a Mon Sep 17 00:00:00 2001
+From: Daniel Ammon <ammonda48113@th-nuernberg.de>
+Date: Fri, 12 Feb 2016 11:31:40 +0100
+Subject: [PATCH 1/7] - added scale velocities function in drive - abs(rpm)
+ bugfix in drive -> just positive velocities were cut by maxonMotor
+
+---
+ .../include/ohm_bob_drive/DifferentialDrive.h         |  9 +++++++++
+ .../ohm_bob_drive/include/ohm_bob_drive/MaxonMotor.h  |  7 +++++++
+ ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h   |  8 +++++++-
+ ros/src/ohm_bob_drive/src/DifferentialDrive.cpp       | 19 ++++++++++++++++---
+ ros/src/ohm_bob_drive/src/MaxonMotor.cpp              |  9 +++++++--
+ 5 files changed, 46 insertions(+), 6 deletions(-)
+
+diff --git a/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h b/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h
+index 773db58..8690b0d 100644
+--- a/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h
++++ b/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h
+@@ -67,6 +67,14 @@ public:
+ 	 */
+ 	nav_msgs::Odometry getOdomMsg();
+ 
++  /**
++   * @fn    scaleVelToMaxRPM()
++   * @brief   scales the velocities of left and right wheel according to maxRPM of motors
++   * @param   vel1 first velocity
++   * @param   vel2 second velocity
++   */
++	void scaleVelToMaxRPM(double& vel1, double& vel2);
++
+ 
+ 	/**
+ 	 * Deconstructor
+@@ -79,6 +87,7 @@ private:
+ 	double wheelGauge;
+ 	double wheelDiameter;
+ 	double gearRatio;
++	double maxRPM;
+ 	std::string odomTfFrame;
+ 	std::string odomBaseFrame;
+ 
+diff --git a/ros/src/ohm_bob_drive/include/ohm_bob_drive/MaxonMotor.h b/ros/src/ohm_bob_drive/include/ohm_bob_drive/MaxonMotor.h
+index 647f858..c2c0269 100644
+--- a/ros/src/ohm_bob_drive/include/ohm_bob_drive/MaxonMotor.h
++++ b/ros/src/ohm_bob_drive/include/ohm_bob_drive/MaxonMotor.h
+@@ -12,6 +12,7 @@
+ #include "Motor.h"
+ #include "MaxonCommunicator.h"
+ #include "ros/ros.h"
++#include "assert.h"
+ 
+ /**
+  * @class   MaxonMotor
+@@ -58,6 +59,12 @@ public:
+ 	 */
+ 	double getActualPosition();
+ 
++  /**
++   * @fn    getMaxRPM
++   * @brief   returns the maximal rpm of the motor
++   */
++  double getMaxRPM();
++
+ 	/**
+ 	 * @fn 		getActualCurrent
+ 	 * @brief 	returns the actual motor current ToDo: which dimension???
+diff --git a/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h b/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h
+index f47da54..5be2b2a 100644
+--- a/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h
++++ b/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h
+@@ -36,7 +36,7 @@ public:
+ 
+ 	/**
+ 	 * @fn 		getRPM
+-	 * @brief 	retruns the actual motor movement in rpm
++	 * @brief 	retruns the actual motor movement in rpm (absolute value!)
+ 	 */
+ 	virtual double getRPM() = 0;
+ 
+@@ -47,6 +47,12 @@ public:
+ 	virtual double getActualCurrent() = 0;
+ 
+ 	/**
++   * @fn    getMaxRPM
++   * @brief   returns the maximal rpm of the motor
++   */
++  double getMaxRPM();
++
++	/**
+ 	 * @fn 		getActualPosition
+ 	 * @brief 	returns the actual motor position ToDo: which dimension???
+ 	 */
+diff --git a/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp b/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp
+index a6f1bd5..23ab4a0 100644
+--- a/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp
++++ b/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp
+@@ -17,6 +17,7 @@ DifferentialDrive::DifferentialDrive(Motor * leftMotor, Motor* rightMotor,
+ 	this->gearRatio = gearRatio;
+ 	this->odomTfFrame = odomTfFrame;
+ 	this->odomBaseFrame = odomBaseFrame;
++	this->maxRPM = std::min(rightMotor->getRPM(), leftMotor->getRPM());
+ 
+ 	// init odom
+ 	odom.theta = 0.0;
+@@ -45,14 +46,27 @@ bool DifferentialDrive::move(const geometry_msgs::Twist::ConstPtr& cmd_vel){
+ 	double vr, vl;
+ 	twist_to_tracks(&vl, &vr, cmd_vel->linear.x, cmd_vel->angular.z);
+ 
+-	long int tpt_l = track_to_TicksPerTurn(vl) * 60;
+-	long int tpt_r = track_to_TicksPerTurn(vr) * 60;
++	double tpt_l = track_to_TicksPerTurn(vl) * 60.0;
++	double tpt_r = track_to_TicksPerTurn(vr) * 60.0;
++
++	scaleVelToMaxRPM(tpt_l, tpt_r);
+ 
+ 	if ((leftMotor->setRPM(tpt_l) && rightMotor->setRPM(tpt_r))){
+ 		return 1;
+ 	} else return 0;
+ };
+ 
++void DifferentialDrive::scaleVelToMaxRPM(double& vel1, double& vel2){
++
++  double absVelMax = std::max(std::abs(vel1), std::abs(vel2));
++
++  if(absVelMax > this->maxRPM)
++  {
++    double scaleFactor = this->maxRPM / absVelMax;
++    vel1 *= scaleFactor;
++    vel2 *= scaleFactor;
++  }
++}
+ 
+ void DifferentialDrive::tracks_to_twist(double vl, double vr, double *v, double *omega)
+ {
+@@ -74,7 +88,6 @@ bool DifferentialDrive::stop(){
+ 	} else return 0;
+ }
+ 
+-
+ void DifferentialDrive::updateOdom(){
+ 
+ 	// for calculating dt
+diff --git a/ros/src/ohm_bob_drive/src/MaxonMotor.cpp b/ros/src/ohm_bob_drive/src/MaxonMotor.cpp
+index 68fb3ef..0f4f602 100644
+--- a/ros/src/ohm_bob_drive/src/MaxonMotor.cpp
++++ b/ros/src/ohm_bob_drive/src/MaxonMotor.cpp
+@@ -31,14 +31,15 @@ MaxonMotor::MaxonMotor(MaxonCommunicator* comm, unsigned short int nodeId, doubl
+ 		ROS_ERROR("Cannot SetVelocityProfile; node-ID = %d; it says: '%s'", nodeId, MaxonCommunicator::getErrorDescription(lastErrorCode, errorDescription));
+ 	}
+ 
+-	this->maxRPM = maxRPM;
++	assert(maxRPM != 0);
++	this->maxRPM = std::abs(maxRPM);
+ 
+ 	ROS_INFO("Initialized motor with node ID %d", nodeId);
+ };
+ 
+ 
+ bool MaxonMotor::setRPM(double rpm){
+-	if(rpm > maxRPM){
++	if(std::abs(rpm) > maxRPM){
+ 		rpm = maxRPM;
+ 		ROS_WARN("Limited rpm %f to maxRPM %f; node_ID = %d",rpm, maxRPM, nodeId);
+ 	}
+@@ -69,6 +70,10 @@ double MaxonMotor::getActualCurrent(){
+ 	} else return (double) current;
+ }
+ 
++double MaxonMotor::getMaxRPM(){
++  return this->maxRPM;
++}
++
+ double MaxonMotor::getActualPosition(){
+ 	int position;
+ 	if(VCS_GetPositionIs(handle, nodeId, & position, &lastErrorCode) == 0){
+-- 
+1.9.1
+
+
+From bb9f03e130c1baa481ec2c4e8bf0510e14e16e9d Mon Sep 17 00:00:00 2001
+From: autobod <you@example.com>
+Date: Mon, 15 Feb 2016 11:57:42 +0100
+Subject: [PATCH 2/7] jon: driving backward signal at lower speed
+
+---
+ ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp b/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp
+index 51fda2f..89ebf60 100644
+--- a/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp
++++ b/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp
+@@ -142,7 +142,7 @@ void Joy_node::joyCallBack(const sensor_msgs::Joy::ConstPtr& joy) {
+   if(vel.angular.z > 0.1){
+ 	  cmd.blinkLeft =true;
+   }
+-  else if(vel.angular.z < -0.1){
++  else if(vel.angular.z < -0.001){
+ 	  cmd.blinkRight = true;
+   }
+   //check vel to buzzer if driving backwards
+-- 
+1.9.1
+
+
+From da5c63ea8b9b498bce8046ac384bcf3bec0f3e97 Mon Sep 17 00:00:00 2001
+From: autobod <you@example.com>
+Date: Mon, 15 Feb 2016 11:57:58 +0100
+Subject: [PATCH 3/7] - dan: bugfix in limit max rpm (use right sign) - dan:
+ bugfix in abstract motor class and getMaxRPM function - dan: bugfix use
+ getMaxRPM and not getRPM for MaxRPM in diffDrive
+
+---
+ .../ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h    |  1 +
+ ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h            |  2 +-
+ ros/src/ohm_bob_drive/src/DifferentialDrive.cpp                |  2 +-
+ ros/src/ohm_bob_drive/src/MaxonMotor.cpp                       | 10 +++++-----
+ 4 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h b/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h
+index 8690b0d..81245ce 100644
+--- a/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h
++++ b/ros/src/ohm_bob_drive/include/ohm_bob_drive/DifferentialDrive.h
+@@ -17,6 +17,7 @@
+ #include "geometry_msgs/TransformStamped.h"
+ #include "tf/transform_broadcaster.h"
+ #include <nav_msgs/Odometry.h>
++#include <iostream>
+ 
+ #define PI 3.14159265359
+ 
+diff --git a/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h b/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h
+index 5be2b2a..9e8c5cc 100644
+--- a/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h
++++ b/ros/src/ohm_bob_drive/include/ohm_bob_drive/Motor.h
+@@ -50,7 +50,7 @@ public:
+    * @fn    getMaxRPM
+    * @brief   returns the maximal rpm of the motor
+    */
+-  double getMaxRPM();
++  virtual double getMaxRPM() = 0;
+ 
+ 	/**
+ 	 * @fn 		getActualPosition
+diff --git a/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp b/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp
+index 23ab4a0..5d49320 100644
+--- a/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp
++++ b/ros/src/ohm_bob_drive/src/DifferentialDrive.cpp
+@@ -17,7 +17,7 @@ DifferentialDrive::DifferentialDrive(Motor * leftMotor, Motor* rightMotor,
+ 	this->gearRatio = gearRatio;
+ 	this->odomTfFrame = odomTfFrame;
+ 	this->odomBaseFrame = odomBaseFrame;
+-	this->maxRPM = std::min(rightMotor->getRPM(), leftMotor->getRPM());
++	this->maxRPM = std::min(rightMotor->getMaxRPM(), leftMotor->getMaxRPM());
+ 
+ 	// init odom
+ 	odom.theta = 0.0;
+diff --git a/ros/src/ohm_bob_drive/src/MaxonMotor.cpp b/ros/src/ohm_bob_drive/src/MaxonMotor.cpp
+index 0f4f602..6059030 100644
+--- a/ros/src/ohm_bob_drive/src/MaxonMotor.cpp
++++ b/ros/src/ohm_bob_drive/src/MaxonMotor.cpp
+@@ -39,16 +39,16 @@ MaxonMotor::MaxonMotor(MaxonCommunicator* comm, unsigned short int nodeId, doubl
+ 
+ 
+ bool MaxonMotor::setRPM(double rpm){
+-	if(std::abs(rpm) > maxRPM){
+-		rpm = maxRPM;
+-		ROS_WARN("Limited rpm %f to maxRPM %f; node_ID = %d",rpm, maxRPM, nodeId);
++	if(std::abs(rpm) > this->maxRPM){
++		rpm *= std::abs(this->maxRPM / rpm); // todo: get sign of rpm before
++		ROS_WARN("Limited rpm %f to maxRPM %f; node_ID = %d",rpm, this->maxRPM, nodeId);
+ 	}
+ 
+ 	long int targetVel = (long int) rpm; // ToDo: cast raus
+ 
+ 	if (VCS_MoveWithVelocity(handle, nodeId, rpm, &lastErrorCode) == 0){
+-		ROS_ERROR("Cannot SetVelocity; node-ID = %d; it says: '%s'", nodeId,
+-				MaxonCommunicator::getErrorDescription(lastErrorCode, errorDescription));
++		ROS_ERROR("Cannot SetVelocity; node-ID = %d; it says: '%s'; velocity was: %f", nodeId,
++				MaxonCommunicator::getErrorDescription(lastErrorCode, errorDescription), rpm);
+ 		return 0;
+ 	} else return 1;
+ };
+-- 
+1.9.1
+
+
+From 837826fe83dc52f162a511a2c4bae4960ff7f7a9 Mon Sep 17 00:00:00 2001
+From: autobod <you@example.com>
+Date: Mon, 15 Feb 2016 11:59:55 +0100
+Subject: [PATCH 4/7] dan: cleaned launchfile
+
+---
+ ros/src/ohm_bob_launch/launch/bob_base.launch | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/ros/src/ohm_bob_launch/launch/bob_base.launch b/ros/src/ohm_bob_launch/launch/bob_base.launch
+index 676e1e1..e135ffc 100644
+--- a/ros/src/ohm_bob_launch/launch/bob_base.launch
++++ b/ros/src/ohm_bob_launch/launch/bob_base.launch
+@@ -109,7 +109,7 @@
+ 		<param name="wheelDiameter" 	type="double" 	value="0.1"/>
+ 		<param name="gearRatio"  	type="double" 	value="33.4"/>
+ 		<param name="liftAccDec"   	type="double" 	value="5000"/>
+-		<param name="driveAcc"  	type="double" 	value="17000"/>
++		<param name="driveAcc"  	type="double" 	value="7000"/>
+ 		<param name="driveDec"  	type="double" 	value="7000"/>
+ 		<param name="liftRPM"   	type="double" 	value="2000"/>
+ 		<param name="driveMaxRpm"  	type="double" 	value="6000"/>
+@@ -126,8 +126,8 @@
+ 		<param name = "joy_topic" type = "string" value = "joy" />
+ 		<param name = "vel_topic" type = "string" value = "vel/teleop" />
+ 		<param name = "controller_type" type = "string" value = "ps3_sixad" />
+-		<param name = "lin_vel_thresh" type = "double" value = "0.5" />
+-		<param name = "ang_vel_thresh" type = "double" value = "0.5" />
++		<param name = "lin_vel_thresh" type = "double" value = "1.00" />
++		<param name = "ang_vel_thresh" type = "double" value = "3.14" />
+ 	</node>
+ 
+    	<node pkg = "ohm_bob_remote" type = "velocity_switch" name = "velocity_switch" output = "$(arg output)">
+-- 
+1.9.1
+
+
+From a28d82678044909f7c6dae69dac051269e9b01a7 Mon Sep 17 00:00:00 2001
+From: autobod <you@example.com>
+Date: Mon, 15 Feb 2016 12:19:44 +0100
+Subject: [PATCH 5/7] dan: changed launchfiles; increased lift decceleration
+
+---
+ ros/src/ohm_bob_launch/launch/autostart.launch | 57 +++-----------------------
+ ros/src/ohm_bob_launch/launch/bob_base.launch  |  4 +-
+ 2 files changed, 7 insertions(+), 54 deletions(-)
+
+diff --git a/ros/src/ohm_bob_launch/launch/autostart.launch b/ros/src/ohm_bob_launch/launch/autostart.launch
+index 55243ca..5af406d 100644
+--- a/ros/src/ohm_bob_launch/launch/autostart.launch
++++ b/ros/src/ohm_bob_launch/launch/autostart.launch
+@@ -13,61 +13,15 @@
+ 		<param name="safety_onOff_srv_topic"   type="string"   value="nodeOnOff"/>
+ 		<param name="wheelGauge"  	type="double" 	value="0.2"/>
+ 		<param name="wheelDiameter" 	type="double" 	value="0.1"/>
+-		<param name="gearRatio"  	type="double" 	value="56"/>
+-		<param name="liftAccDec"   	type="double" 	value="5000"/>
+-		<param name="driveAcc"  	type="double" 	value="17000"/>
++		<param name="gearRatio"  	type="double" 	value="33.4"/>
++		<param name="liftAccDec"   	type="double" 	value="100000"/>
++		<param name="driveAcc"  	type="double" 	value="7000"/>
+ 		<param name="driveDec"  	type="double" 	value="7000"/>
+ 		<param name="liftRPM"   	type="double" 	value="4000"/>
+ 		<param name="driveMaxRpm"  	type="double" 	value="6000"/>
+ 		<param name="baudrate"  	type="int" 	value="1000000"/>	
+  	</node>
+ 
+-	<node pkg="ohm_bob_control_main" type = "bob_control_main" name = "bob_control_main" output = "$(arg output)">
+-      
+-		<param name = "register_robot_topic" type = "string" value = "/hive_node/register_robot"/>
+-      		<param name = "topic_pop_task_vector" type = "string" value = "/hive_node/pop_task_vector"/>
+-      		<param name = "topic_push_task_vector" type = "string" value = "/hive_node/push_task_vector"/>
+-      		<param name = "pose_topic"           type = "string" value = "pose"/>
+-      		<param name = "map_data_topic"       type = "string" value = "map_data"/>
+-      
+-      		<param name = "goal_topic" type = "string" value = "/move_base_simple/goal"/>	
+-      		<param name = "topic_path"        type = "string" value = "path" />
+-      		<param name = "topic_create_path" type = "string" value = "create_path" />
+-       		<param name = "age_max_pose" type = "double" value = "2.0" />
+-       		<param name = "fails_max" type = "int" value = "10" />		
+-	   	<param name = "topic_status_path_control" type = "string" value = "status" />
+-     		<param name = "topic_send_path" type = "string" value = "send_path" />
+-	  	<param name = "time_out_status_path_ctrl" type = "double" value = "5.0" />	
+-	  
+-	  	 parameters for Docking: 
+-	  	<param name="onOff_srv_topic" 		type="string" 	value="/line_detection_node/nodeOnOff"/>
+-	  	<param name="linear_vel"  			type="double" 	value="0.04"/>
+-		<param name="distance_to_motion" 	type="double" 	value="0.18"/>
+-		<param name="angular_vel"            	type="double"   value="0.09"/>
+-		<param name="twist_topic" 			type="string" 	value="vel/autonomous"/>
+-		<param name="lift_topic" 			type="string" 	value="lift/cmd"/>		
+-		<param name="line_msg_topic"  		type="string" 	value="ohm_bob_docking/Line_msg"/>
+-		<param name="pose_topic"  			type="string" 	value="wheelodom"/>
+-		<param name="lua_config_path" 		type="string" 	value="$(find ohm_bob_docking)/src/lineDetection.lua"/>		
+-		<param name="line_ir_msg_topic"  	type="string" 	value="/linePose"/>
+-		<param name="docking_switch_topic" 	type="string" 	value="/managerIoNode/GetDockingLimitSwitch"/>
+-		<param name="upper_limit_switch_topic" 	type="string" 	value="/managerIoNode/GetUpperLimitSwitch"/>
+-		<param name="lower_limit_switch_topic"  type="string" 	value="/managerIoNode/GetLowerLimitSwitch"/>
+-		<param name="blink_left_topic"          type="string"   value="/managerIoNode/blinkerLeft"/>
+-        	<param name="blink_right_topic"         type="string"   value="/managerIoNode/blinkerRight"/>
+-		<param name="buzzer_topic" 		type="string" 	value="/managerIoNode/buzzer"/>
+-		<param name="buzzer_state_topic"  	type="string" 	value="/managerIoNode/buzzerState"/>
+-		<param name="flush_light_topic" 	type="string" 	value="/managerIoNode/warnLight"/>
+-		<param name="distance_undocking"  	type="double" 	value="0.8"/>
+-	</node> <!-- -->
+-
+-	<node pkg = "uvc_camera" 		type = "uvc_camera_node" name = "uvc_camera_node" output="$(arg output)">
+-		<param name="device"  		type="string" 	value="/dev/video0"/>
+-		<param name="width"   		type="int" 	value="160"/>
+-		<param name="height"  		type="int" 	value="120"/>
+-		<param name="fps"  		type="int" 	value="20"/>		
+- 	</node>  <!--  -->
+-
+ 	<node pkg = "joy" type = "joy_node" name = "joy_node"> 
+           	<param name = "autorepeat_rate" type = "double" value = "30.0"/> 
+           	<param name = "dev" type = "string" value = "/dev/input/js0"/> 
+@@ -79,8 +33,8 @@
+ 		<param name = "lift_topic" type = "string" value = "lift/teleop" />
+           	<param name = "controller_type" type = "string" value = "ps3_sixad" />
+ 		<param name = "push_task_topic" type = "string" value = "/hive_node/push_task_vector" /> 
+-          	<param name = "lin_vel_thresh" type = "double" value = "0.5" /> 
+-          	<param name = "ang_vel_thresh" type = "double" value = "0.5" /> 
++          	<param name = "lin_vel_thresh" type = "double" value = "1.00" /> 
++          	<param name = "ang_vel_thresh" type = "double" value = "3.14" /> 
+       	</node> 
+ 
+ 	<node pkg = "ohm_bob_remote" type = "velocity_switch" name = "velocity_switch" output = "screen"> 
+@@ -94,7 +48,6 @@
+ 		<param name = "lift_topic" type = "string" value = "lift/buttons" /> 
+ 	</node>
+           
+-
+ 	<node pkg = "cebo_lc_io"     type = "managerIoNode" name = "managerIoNode" output="$(arg output)">
+                 <param name="blink_left_topic"          type="string"   value="blinkerLeft"/>
+                 <param name="blink_right_topic"         type="string"   value="blinkerRight"/>
+diff --git a/ros/src/ohm_bob_launch/launch/bob_base.launch b/ros/src/ohm_bob_launch/launch/bob_base.launch
+index e135ffc..39baedd 100644
+--- a/ros/src/ohm_bob_launch/launch/bob_base.launch
++++ b/ros/src/ohm_bob_launch/launch/bob_base.launch
+@@ -108,10 +108,10 @@
+ 		<param name="wheelGauge"  	type="double" 	value="0.2"/>
+ 		<param name="wheelDiameter" 	type="double" 	value="0.1"/>
+ 		<param name="gearRatio"  	type="double" 	value="33.4"/>
+-		<param name="liftAccDec"   	type="double" 	value="5000"/>
++		<param name="liftAccDec"   	type="double" 	value="100000"/> 
+ 		<param name="driveAcc"  	type="double" 	value="7000"/>
+ 		<param name="driveDec"  	type="double" 	value="7000"/>
+-		<param name="liftRPM"   	type="double" 	value="2000"/>
++		<param name="liftRPM"   	type="double" 	value="4000"/>
+ 		<param name="driveMaxRpm"  	type="double" 	value="6000"/>
+ 		<param name="baudrate"  	type="int" 	value="1000000"/>	
+  	</node>
+-- 
+1.9.1
+
+
+From 082b89a0576a634736de8b78e0162fd1115271be Mon Sep 17 00:00:00 2001
+From: autobod <you@example.com>
+Date: Mon, 15 Feb 2016 17:33:20 +0100
+Subject: [PATCH 6/7] jon: sensibility of buzzer_sound when driving backwards
+ increased
+
+---
+ ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp b/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp
+index 89ebf60..e5d00bb 100644
+--- a/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp
++++ b/ros/src/ohm_bob_remote/src/remote_control/joy_node.cpp
+@@ -146,7 +146,7 @@ void Joy_node::joyCallBack(const sensor_msgs::Joy::ConstPtr& joy) {
+ 	  cmd.blinkRight = true;
+   }
+   //check vel to buzzer if driving backwards
+-  if(vel.linear.x < -0.1){
++  if(vel.linear.x < -0.001){
+     _Buzzer ->setBackwards(BUZZER_ON);
+   }
+   	
+-- 
+1.9.1
+
+
+From 51fa79f47625d606d0165d36b03bef6a3cab5eff Mon Sep 17 00:00:00 2001
+From: Daniel Ammon <ammonda48113@th-nuernberg.de>
+Date: Tue, 16 Feb 2016 10:05:05 +0100
+Subject: [PATCH 7/7] - decreased rotational velocity in autostart.launch -
+ cleaned launchfile formatting
+
+---
+ ros/src/ohm_bob_launch/launch/autostart.launch | 118 +++++-----
+ ros/src/ohm_bob_launch/launch/bob_base.launch  | 292 ++++++++++++-------------
+ 2 files changed, 201 insertions(+), 209 deletions(-)
+
+diff --git a/ros/src/ohm_bob_launch/launch/autostart.launch b/ros/src/ohm_bob_launch/launch/autostart.launch
+index 5af406d..63899e9 100644
+--- a/ros/src/ohm_bob_launch/launch/autostart.launch
++++ b/ros/src/ohm_bob_launch/launch/autostart.launch
+@@ -1,66 +1,66 @@
+ <launch>
+-	<arg name = "output"            default = "screen" />             <!-- log | screen -->
+-	
+-	<node pkg= "ohm_bob_drive" 		type = "DriveNode" name = "DriveNode" output="$(arg output)">
+-		<param name="twistTopic"  	type="string" 	value="vel/cmd"/>
+-		<param name="liftTopic"  	type="string" 	value="lift/cmd"/>		
+-		<param name="currentsTopic"  	type="string" 	value="current"/>		
+-		<param name="baseFrame" 	type="string" 	value="map"/>
+-		<param name="deviceName"  	type="string" 	value="EPOS2"/>
+-		<param name="protocolStackName" type="string" 	value="MAXON SERIAL V2"/>		
+-		<param name="interfaceName"  	type="string" 	value="USB"/>		
+-		<param name="PortName" 		type="string" 	value="USB0"/>
+-		<param name="safety_onOff_srv_topic"   type="string"   value="nodeOnOff"/>
+-		<param name="wheelGauge"  	type="double" 	value="0.2"/>
+-		<param name="wheelDiameter" 	type="double" 	value="0.1"/>
+-		<param name="gearRatio"  	type="double" 	value="33.4"/>
+-		<param name="liftAccDec"   	type="double" 	value="100000"/>
+-		<param name="driveAcc"  	type="double" 	value="7000"/>
+-		<param name="driveDec"  	type="double" 	value="7000"/>
+-		<param name="liftRPM"   	type="double" 	value="4000"/>
+-		<param name="driveMaxRpm"  	type="double" 	value="6000"/>
+-		<param name="baudrate"  	type="int" 	value="1000000"/>	
+- 	</node>
++    <arg name="output" default="screen" />             <!-- log | screen -->
+ 
+-	<node pkg = "joy" type = "joy_node" name = "joy_node"> 
+-          	<param name = "autorepeat_rate" type = "double" value = "30.0"/> 
+-          	<param name = "dev" type = "string" value = "/dev/input/js0"/> 
+-      	</node> 
++    <node pkg="ohm_bob_drive" type="DriveNode" name="DriveNode" output="$(arg output)">
++        <param name="twistTopic" type="string" value="vel/cmd" />
++        <param name="liftTopic" type="string" value="lift/cmd" />
++        <param name="currentsTopic" type="string" value="current" />
++        <param name="baseFrame" type="string" value="map" />
++        <param name="deviceName" type="string" value="EPOS2" />
++        <param name="protocolStackName" type="string" value="MAXON SERIAL V2" />
++        <param name="interfaceName" type="string" value="USB" />
++        <param name="PortName" type="string" value="USB0" />
++        <param name="safety_onOff_srv_topic" type="string" value="nodeOnOff" />
++        <param name="wheelGauge" type="double" value="0.2" />
++        <param name="wheelDiameter" type="double" value="0.1" />
++        <param name="gearRatio" type="double" value="33.4" />
++        <param name="liftAccDec" type="double" value="100000" />
++        <param name="driveAcc" type="double" value="7000" />
++        <param name="driveDec" type="double" value="7000" />
++        <param name="liftRPM" type="double" value="4000" />
++        <param name="driveMaxRpm" type="double" value="6000" />
++        <param name="baudrate" type="int" value="1000000" />
++    </node>
+ 
+-      	<node pkg = "ohm_bob_remote" type = "joy_node" name = "remote_control" output="screen"> 
+-          	<param name = "joy_topic" type = "string" value = "joy" /> 
+-          	<param name = "vel_topic" type = "string" value = "vel/teleop" /> 
+-		<param name = "lift_topic" type = "string" value = "lift/teleop" />
+-          	<param name = "controller_type" type = "string" value = "ps3_sixad" />
+-		<param name = "push_task_topic" type = "string" value = "/hive_node/push_task_vector" /> 
+-          	<param name = "lin_vel_thresh" type = "double" value = "1.00" /> 
+-          	<param name = "ang_vel_thresh" type = "double" value = "3.14" /> 
+-      	</node> 
++    <node pkg="joy" type="joy_node" name="joy_node">
++        <param name="autorepeat_rate" type="double" value="30.0" />
++        <param name="dev" type="string" value="/dev/input/js0" />
++    </node>
+ 
+-	<node pkg = "ohm_bob_remote" type = "velocity_switch" name = "velocity_switch" output = "screen"> 
+-          	<param name = "thresh_axis_moved" type = "double" value = "0.25"/> 
+-          	<param name = "topic_vel_out" type = "string" value = "vel/cmd" /> 
+-          	<param name = "topic_velocity_autonomous" type = "string" value = "vel/autonomous" /> 
+-          	<param name = "topic_velocity_teleop" type = "string" value = "vel/teleop" /> 
+-      	</node>
++    <node pkg="ohm_bob_remote" type="joy_node" name="remote_control" output="screen">
++        <param name="joy_topic" type="string" value="joy" />
++        <param name="vel_topic" type="string" value="vel/teleop" />
++        <param name="lift_topic" type="string" value="lift/teleop" />
++        <param name="controller_type" type="string" value="ps3_sixad" />
++        <param name="push_task_topic" type="string" value="/hive_node/push_task_vector" />
++        <param name="lin_vel_thresh" type="double" value="1.00" />
++        <param name="ang_vel_thresh" type="double" value="1.57" />
++    </node>
+ 
+-	<node pkg = "ohm_bob_remote" type = "lift_buttons" name = "lift_buttons" output = "screen">
+-		<param name = "lift_topic" type = "string" value = "lift/buttons" /> 
+-	</node>
+-          
+-	<node pkg = "cebo_lc_io"     type = "managerIoNode" name = "managerIoNode" output="$(arg output)">
+-                <param name="blink_left_topic"          type="string"   value="blinkerLeft"/>
+-                <param name="blink_right_topic"         type="string"   value="blinkerRight"/>
+-                <param name="flush_light_topic"         type="string"   value="warnLight"/>
+-                <param name="buzzer_topic"              type="string"   value="buzzer"/>
+-                <param name="buzzer_state_topic"        type="string"   value="buzzerState"/>
+-                <param name="upper_limit_switch_topic" 	type="string" 	value="GetUpperLimitSwitch"/>
+-                <param name="lower_limit_switch_topic" 	type="string" 	value="GetLowerLimitSwitch"/>
+-                <param name="docking_switch_topic"     	type="string"   value="GetDockingLimitSwitch"/>
+-                <param name="button1_topic"             type="string"   value="GetButton01"/>
+-                <param name="button2_topic"             type="string"   value="GetButton02"/>
+-                <param name="laser_warn_topic"          type="string"   value="GetLaserWarn"/>
+-                <param name="laser_savety_topic"        type="string"   value="GetLaserSafety"/>
+-        </node>
++    <node pkg="ohm_bob_remote" type="velocity_switch" name="velocity_switch" output="screen">
++        <param name="thresh_axis_moved" type="double" value="0.25" />
++        <param name="topic_vel_out" type="string" value="vel/cmd" />
++        <param name="topic_velocity_autonomous" type="string" value="vel/autonomous" />
++        <param name="topic_velocity_teleop" type="string" value="vel/teleop" />
++    </node>
++
++    <node pkg="ohm_bob_remote" type="lift_buttons" name="lift_buttons" output="screen">
++        <param name="lift_topic" type="string" value="lift/buttons" />
++    </node>
++
++    <node pkg="cebo_lc_io" type="managerIoNode" name="managerIoNode" output="$(arg output)">
++        <param name="blink_left_topic" type="string" value="blinkerLeft" />
++        <param name="blink_right_topic" type="string" value="blinkerRight" />
++        <param name="flush_light_topic" type="string" value="warnLight" />
++        <param name="buzzer_topic" type="string" value="buzzer" />
++        <param name="buzzer_state_topic" type="string" value="buzzerState" />
++        <param name="upper_limit_switch_topic" type="string" value="GetUpperLimitSwitch" />
++        <param name="lower_limit_switch_topic" type="string" value="GetLowerLimitSwitch" />
++        <param name="docking_switch_topic" type="string" value="GetDockingLimitSwitch" />
++        <param name="button1_topic" type="string" value="GetButton01" />
++        <param name="button2_topic" type="string" value="GetButton02" />
++        <param name="laser_warn_topic" type="string" value="GetLaserWarn" />
++        <param name="laser_savety_topic" type="string" value="GetLaserSafety" />
++    </node>
+ 
+ </launch>
+diff --git a/ros/src/ohm_bob_launch/launch/bob_base.launch b/ros/src/ohm_bob_launch/launch/bob_base.launch
+index 39baedd..3cee137 100644
+--- a/ros/src/ohm_bob_launch/launch/bob_base.launch
++++ b/ros/src/ohm_bob_launch/launch/bob_base.launch
+@@ -1,153 +1,145 @@
+ <launch>
+-	 <arg name = "output"            default = "screen" />             <!-- log | screen -->
+-
+-<!--	 
+-  <node pkg="omron_driver" type ="omron_driver" name="omron_driver" output = "$(arg output)">
+-	<param name = "host_ip" type = "string" value = "192.168.3.10"/>
+-	<param name = "scanner_ip" type ="string" value= "192.168.3.50"/>
+-  </node>
+--->
+-
+-  <node pkg="omron_os32c_driver" type="omron_os32c_node" name="omron_os32c_node">
+-    <param name="host" value="192.168.3.50" />
+-    <param name="frame_id" value="laser" />
+-    <param name="start_angle" value="2.2899" />
+-    <param name="end_angle" value="-2.2899" />
+-  </node>
+- 
+-
+-
+- <node pkg="ohm_bob_laser_filter" type="bob_laser_filter" name="bob_laser_filter">
+-		<param name="min_angle" type="double" value="-2.0"/>
+-		<param name="max_angle" type="double" value="2.0"/>
+-		<param name="mirror" 	type="bool"   value="true"/>
+-  </node>
+-
+-	<!-- TF 
+-	<node pkg="tf"  type="static_transform_publisher" name = "tf_xyz" args = "0.0 0.0 0.0 0.0 0.0 0.0  ekf_base_footprint_frame imu 50"/>
+-	<node pkg="tf"  type="static_transform_publisher" name = "tf_abc" args = "0.0 0.0 0.0 0.0 0.0 0.0  map ekf_output_frame  50"/> -->
+-	<node pkg="tf"  type="static_transform_publisher" name = "tf_abc" args = "-0.61 0.0 0.0 0.0 0.0 0.0  laser base_footprint  50"/>
+-
+-  <!-- SLAM -->
+-  <!-- <node pkg="tf"  type="static_transform_publisher" name = "tf_laser" args = "-0.25 0.0 0.0 0.0 0.0 0.0 ekf_base_footprint_frame base_footprint 50"/> -->
+-
+-  <node name = "slam_node" pkg = "ohm_tsd_slam" type = "slam_node" output = "$(arg output)">
+-    <param name = "laser_topic"             type = "string" value = "filtered_scan"  />
+-    <param name ="data_source"              type = "string" value="$/home/user/.ros/tsd_grid.dat"/>
+-    <param name = "x_offset"            		type = "double" value = "0.0"   />
+-    <param name = "y_offset"           		 	type = "double" value = "0.0"   />
+-    <param name = "y_off_factor"            type = "double" value = "0.0"   />
+-    <param name = "yaw_offset"              type = "double" value = "0.0"   />      
+-    <param name = "map_size"      					type = "int"    value = "11" />
+-    <param name = "cellsize"                type = "double" value = "0.015" />
+-    <param name = "min_range"               type = "double" value = "0.0"   />
+-    <param name = "max_range"               type = "double" value = "50.0"  />
+-    <param name = "low_reflectivity_range"  type = "double" value = "3.0"   />
+-    <param name = "occ_grid_time_interval"  type = "double" value = "2.0"   />
+-    <param name = "loop_rate"               type = "double" value = "40.0"  />
+-    <param name = "pose_topic"              type = "string" value = "pose"  />
+-    <param name = "tf_base_frame"           type = "string" value = "/map"  />
+-    <param name = "tf_child_frame"          type = "string" value = "laser" />
+-    <param name = "truncation_radius"       type = "double" value = "10"   />
+-    <param name = "object_inflation_factor" type = "int"    value = "2"     />
+-    <param name = "use_object_inflation"    type = "bool"   value = "true" /> 
+-    <param name = "map_topic"               type = "string" value = "/map"  />
+-    <param name = "get_map_topic"           type = "string" value = "/map"  /> 
+-    <param name = "footprint_width"         type = "double" value = "0.15"  />
+-		<param name = "footprint_height"        type = "double" value = "0.15"  />
+-		<param name = "call_hive"               type = "bool"   value = "true"  />
+-		
+-		<!-- registration parameters -->
+-		<param name = "registration_mode"       type = "int"    value = "3"     />    <!-- 0: ICP    1: EXPERIMENTAL -->
+-
+-		<!-- ICP parameters -->
+-		<param name = "dist_filter_max"         type = "double" value = "0.4"   />    <!-- maximum distance for matching points -->
+-		<param name = "dist_filter_min"         type = "double" value = "0.02" />    <!-- minimum distance for matching points -->
+-		<param name = "icp_iterations"          type = "int"    value = "30"    />    <!-- number of icp iterations             -->
+-		<param name = "reg_trs_max"             type = "double" value = "1.0"   />    <!-- maximum translation between two scans-->
+-		<param name = "reg_sin_rot_max"         type = "double" value = "0.5"   />    <!-- maximum rotation between two scans   -->
+-
+-		<!-- ransac parameters -->
+-		<param name = "ransac_trials"           type = "int"    value = "50"    />    <!-- number of ransac trials              -->
+-		<param name = "ransac_eps_thresh"       type = "double" value = "0.15"  />    <!-- threshold for outlier rejection in meters -->
+-		<param name = "ransac_ctrlset_size"     type = "int"    value = "180"   />    <!-- number of points taking for ransac   -->
+-		<param name = "ransac_phi_max"          type = "double" value = "45.0"  />    <!-- maximum angle for ransac matching    -->
+-
+-		 <!-- parameter set for PDF and EXPERIMENTAL registration  -->
+-         <param type = "int"    name = "trials"                 value = "30"/>
+-         <param type = "double" name = "epsThresh"              value = "0.15"/>
+-         <param type = "int"    name = "sizeControlSet"         value = "360"/>
+-
+-         <!-- parameter only for PDF registration  -->
+-         <param type = "double" name = "zhit"                   value = "0.2"/>
+-         <param type = "double" name = "zphi"                   value = "0.2"/>
+-         <param type = "double" name = "zshort"                 value = "0.2"/>
+-         <param type = "double" name = "zmax"                   value = "0.2"/>
+-         <param type = "double" name = "zrand"                  value = "0.2"/>
+-         <param type = "double" name = "percentagePointsInC"    value = "0.6"/>
+-         <param type = "double" name = "rangemax"               value = "65"/>
+-         <param type = "double" name = "sigphi"                 value = "0.052"/> <!-- 3 degree -->
+-         <param type = "double" name = "sighit"                 value = "0.15"/>
+-         <param type = "double" name = "lamshort"               value = "0.08"/>
+-         <param type = "double" name = "maxAngleDiff"           value = "1.5"/>
+-
+-	</node>
+-
+-	<!-- DRIVE -->
+-	<node pkg= "ohm_bob_drive" 		type = "DriveNode" name = "DriveNode" output="$(arg output)">
+-		<param name="twistTopic"  	type="string" value="vel/cmd"/>
+-		<param name="liftTopic"  	type="string" value="lift/cmd"/>		
+-		<param name="currentsTopic"  	type="string" value="current"/>		
+-		<param name="baseFrame" 	type="string" value="map"/>
+-		<param name="deviceName"  	type="string" value="EPOS2"/>
+-		<param name="protocolStackName" type="string" value="MAXON SERIAL V2"/>		
+-		<param name="interfaceName"  	type="string" value="USB"/>		
+-		<param name="PortName" 		type="string" value="USB0"/>
+-		<param name="laser_safety_topic" type="string" value="/managerIoNode/GetLaserSafety"/>
+-		<param name="savety_onOff_srv_topic" type="string" value="nodeOnOff"/>
+-		<param name="wheelGauge"  	type="double" 	value="0.2"/>
+-		<param name="wheelDiameter" 	type="double" 	value="0.1"/>
+-		<param name="gearRatio"  	type="double" 	value="33.4"/>
+-		<param name="liftAccDec"   	type="double" 	value="100000"/> 
+-		<param name="driveAcc"  	type="double" 	value="7000"/>
+-		<param name="driveDec"  	type="double" 	value="7000"/>
+-		<param name="liftRPM"   	type="double" 	value="4000"/>
+-		<param name="driveMaxRpm"  	type="double" 	value="6000"/>
+-		<param name="baudrate"  	type="int" 	value="1000000"/>	
+- 	</node>
+-		/managerIoNode
+-
+-	<node pkg="joy" name="joy_node" type="joy_node">
+-   	 	<param name="dev"              value="/dev/input/js0"   type="string"/>
+-    		<param name="autorepeat_rate"  value="20.0"/>
+-  	</node>
+-	
+-	<node pkg = "ohm_bob_remote" type = "joy_node" name = "remote_control" output="$(arg output)">
+-		<param name = "joy_topic" type = "string" value = "joy" />
+-		<param name = "vel_topic" type = "string" value = "vel/teleop" />
+-		<param name = "controller_type" type = "string" value = "ps3_sixad" />
+-		<param name = "lin_vel_thresh" type = "double" value = "1.00" />
+-		<param name = "ang_vel_thresh" type = "double" value = "3.14" />
+-	</node>
+-
+-   	<node pkg = "ohm_bob_remote" type = "velocity_switch" name = "velocity_switch" output = "$(arg output)">
+-		<param name = "thresh_axis_moved" type = "double" value = "0.25"/>
+-  	</node>
+-  	
+- 
+-<node pkg = "cebo_lc_io"                type = "managerIoNode" name = "managerIoNode" output="$(arg output)">
+-                <param name="blink_left_topic"                          type="string"   value="blinkerLeft"/>
+-                <param name="blink_right_topic"                         type="string"   value="blinkerRight"/>
+-                <param name="flush_light_topic"                         type="string"   value="flushLight"/>
+-                <param name="buzzer_topic"                                      type="string"   value="buzzer"/>
+-                <param name="buzzer_state_topic"                type="string"   value="buzzerState"/>
+-                <param name="upper_limit_switch_topic"  type="string" value="GetUpperLimitSwitch"/>
+-                <param name="lower_limit_switch_topic"  type="string" value="GetLowerLimitSwitch"/>
+-                <param name="docking_switch_topic"      type="string"   value="GetDockingLimitSwitch"/>
+-                <param name="button1_topic"                                     type="string"   value="GetButton01"/>
+-                <param name="button2_topic"                                     type="string"   value="GetButton02"/>
+-                <param name="laser_warn_topic"                          type="string"   value="GetLaserWarn"/>
+-                <param name="laser_savety_topic"                        type="string"   value="GetLaserSafety"/>
+-        </node>
++    <arg name="output" default="screen" />             <!-- log | screen -->
++
++    <!-- <node pkg="omron_driver" type ="omron_driver" name="omron_driver" output = "$(arg output)"> <param name = "host_ip" type = "string" 
++        value = "192.168.3.10"/> <param name = "scanner_ip" type ="string" value= "192.168.3.50"/> </node> -->
++
++    <node pkg="omron_os32c_driver" type="omron_os32c_node" name="omron_os32c_node">
++        <param name="host" value="192.168.3.50" />
++        <param name="frame_id" value="laser" />
++        <param name="start_angle" value="2.2899" />
++        <param name="end_angle" value="-2.2899" />
++    </node>
++
++    <node pkg="ohm_bob_laser_filter" type="bob_laser_filter" name="bob_laser_filter">
++        <param name="min_angle" type="double" value="-2.0" />
++        <param name="max_angle" type="double" value="2.0" />
++        <param name="mirror" type="bool" value="true" />
++    </node>
++
++    <!-- TF <node pkg="tf" type="static_transform_publisher" name = "tf_xyz" args = "0.0 0.0 0.0 0.0 0.0 0.0 ekf_base_footprint_frame imu 50"/> 
++        <node pkg="tf" type="static_transform_publisher" name = "tf_abc" args = "0.0 0.0 0.0 0.0 0.0 0.0 map ekf_output_frame 50"/> -->
++    <node pkg="tf" type="static_transform_publisher" name="tf_abc" args="-0.61 0.0 0.0 0.0 0.0 0.0  laser base_footprint  50" />
++
++    <!-- SLAM -->
++    <!-- <node pkg="tf" type="static_transform_publisher" name = "tf_laser" args = "-0.25 0.0 0.0 0.0 0.0 0.0 ekf_base_footprint_frame base_footprint 
++        50"/> -->
++
++    <node name="slam_node" pkg="ohm_tsd_slam" type="slam_node" output="$(arg output)">
++        <param name="laser_topic" type="string" value="filtered_scan" />
++        <param name="data_source" type="string" value="$/home/user/.ros/tsd_grid.dat" />
++        <param name="x_offset" type="double" value="0.0" />
++        <param name="y_offset" type="double" value="0.0" />
++        <param name="y_off_factor" type="double" value="0.0" />
++        <param name="yaw_offset" type="double" value="0.0" />
++        <param name="map_size" type="int" value="11" />
++        <param name="cellsize" type="double" value="0.015" />
++        <param name="min_range" type="double" value="0.0" />
++        <param name="max_range" type="double" value="50.0" />
++        <param name="low_reflectivity_range" type="double" value="3.0" />
++        <param name="occ_grid_time_interval" type="double" value="2.0" />
++        <param name="loop_rate" type="double" value="40.0" />
++        <param name="pose_topic" type="string" value="pose" />
++        <param name="tf_base_frame" type="string" value="/map" />
++        <param name="tf_child_frame" type="string" value="laser" />
++        <param name="truncation_radius" type="double" value="10" />
++        <param name="object_inflation_factor" type="int" value="2" />
++        <param name="use_object_inflation" type="bool" value="true" />
++        <param name="map_topic" type="string" value="/map" />
++        <param name="get_map_topic" type="string" value="/map" />
++        <param name="footprint_width" type="double" value="0.15" />
++        <param name="footprint_height" type="double" value="0.15" />
++        <param name="call_hive" type="bool" value="true" />
++
++        <!-- registration parameters -->
++        <param name="registration_mode" type="int" value="3" />    <!-- 0: ICP 1: EXPERIMENTAL -->
++
++        <!-- ICP parameters -->
++        <param name="dist_filter_max" type="double" value="0.4" />    <!-- maximum distance for matching points -->
++        <param name="dist_filter_min" type="double" value="0.02" />    <!-- minimum distance for matching points -->
++        <param name="icp_iterations" type="int" value="30" />    <!-- number of icp iterations -->
++        <param name="reg_trs_max" type="double" value="1.0" />    <!-- maximum translation between two scans -->
++        <param name="reg_sin_rot_max" type="double" value="0.5" />    <!-- maximum rotation between two scans -->
++
++        <!-- ransac parameters -->
++        <param name="ransac_trials" type="int" value="50" />    <!-- number of ransac trials -->
++        <param name="ransac_eps_thresh" type="double" value="0.15" />    <!-- threshold for outlier rejection in meters -->
++        <param name="ransac_ctrlset_size" type="int" value="180" />    <!-- number of points taking for ransac -->
++        <param name="ransac_phi_max" type="double" value="45.0" />    <!-- maximum angle for ransac matching -->
++
++        <!-- parameter set for PDF and EXPERIMENTAL registration -->
++        <param type="int" name="trials" value="30" />
++        <param type="double" name="epsThresh" value="0.15" />
++        <param type="int" name="sizeControlSet" value="360" />
++
++        <!-- parameter only for PDF registration -->
++        <param type="double" name="zhit" value="0.2" />
++        <param type="double" name="zphi" value="0.2" />
++        <param type="double" name="zshort" value="0.2" />
++        <param type="double" name="zmax" value="0.2" />
++        <param type="double" name="zrand" value="0.2" />
++        <param type="double" name="percentagePointsInC" value="0.6" />
++        <param type="double" name="rangemax" value="65" />
++        <param type="double" name="sigphi" value="0.052" /> <!-- 3 degree -->
++        <param type="double" name="sighit" value="0.15" />
++        <param type="double" name="lamshort" value="0.08" />
++        <param type="double" name="maxAngleDiff" value="1.5" />
++    </node>
++
++    <!-- DRIVE -->
++    <node pkg="ohm_bob_drive" type="DriveNode" name="DriveNode" output="$(arg output)">
++        <param name="twistTopic" type="string" value="vel/cmd" />
++        <param name="liftTopic" type="string" value="lift/cmd" />
++        <param name="currentsTopic" type="string" value="current" />
++        <param name="baseFrame" type="string" value="map" />
++        <param name="deviceName" type="string" value="EPOS2" />
++        <param name="protocolStackName" type="string" value="MAXON SERIAL V2" />
++        <param name="interfaceName" type="string" value="USB" />
++        <param name="PortName" type="string" value="USB0" />
++        <param name="laser_safety_topic" type="string" value="/managerIoNode/GetLaserSafety" />
++        <param name="savety_onOff_srv_topic" type="string" value="nodeOnOff" />
++        <param name="wheelGauge" type="double" value="0.2" />
++        <param name="wheelDiameter" type="double" value="0.1" />
++        <param name="gearRatio" type="double" value="33.4" />
++        <param name="liftAccDec" type="double" value="100000" />
++        <param name="driveAcc" type="double" value="7000" />
++        <param name="driveDec" type="double" value="7000" />
++        <param name="liftRPM" type="double" value="4000" />
++        <param name="driveMaxRpm" type="double" value="6000" />
++        <param name="baudrate" type="int" value="1000000" />
++    </node>
++    /managerIoNode
++
++    <node pkg="joy" name="joy_node" type="joy_node">
++        <param name="dev" value="/dev/input/js0" type="string" />
++        <param name="autorepeat_rate" value="20.0" />
++    </node>
++
++    <node pkg="ohm_bob_remote" type="joy_node" name="remote_control" output="$(arg output)">
++        <param name="joy_topic" type="string" value="joy" />
++        <param name="vel_topic" type="string" value="vel/teleop" />
++        <param name="controller_type" type="string" value="ps3_sixad" />
++        <param name="lin_vel_thresh" type="double" value="1.00" />
++        <param name="ang_vel_thresh" type="double" value="3.14" />
++    </node>
++
++    <node pkg="ohm_bob_remote" type="velocity_switch" name="velocity_switch" output="$(arg output)">
++        <param name="thresh_axis_moved" type="double" value="0.25" />
++    </node>
++
++    <node pkg="cebo_lc_io" type="managerIoNode" name="managerIoNode" output="$(arg output)">
++        <param name="blink_left_topic" type="string" value="blinkerLeft" />
++        <param name="blink_right_topic" type="string" value="blinkerRight" />
++        <param name="flush_light_topic" type="string" value="flushLight" />
++        <param name="buzzer_topic" type="string" value="buzzer" />
++        <param name="buzzer_state_topic" type="string" value="buzzerState" />
++        <param name="upper_limit_switch_topic" type="string" value="GetUpperLimitSwitch" />
++        <param name="lower_limit_switch_topic" type="string" value="GetLowerLimitSwitch" />
++        <param name="docking_switch_topic" type="string" value="GetDockingLimitSwitch" />
++        <param name="button1_topic" type="string" value="GetButton01" />
++        <param name="button2_topic" type="string" value="GetButton02" />
++        <param name="laser_warn_topic" type="string" value="GetLaserWarn" />
++        <param name="laser_savety_topic" type="string" value="GetLaserSafety" />
++    </node>
+ 
+ </launch>
+-- 
+1.9.1
+

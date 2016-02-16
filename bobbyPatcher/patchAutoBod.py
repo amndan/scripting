@@ -11,13 +11,14 @@ git apply --check fix_empty_poster.patch
 git am --signoff < fix_empty_poster.patch
 git reset --hard 414034972eb5d062140c3fb291e7d0880c48937a
 git log -1 --pretty=format:%H
+use git rebase when online to update to remote sha's
 '''
 
 import os, sys
 
 def findPatchFilePath():
     "Searches for a patch file in the current dir"   
-    patchName = "my.patch"  #todo: find path name with endig .patch
+    patchName = "ImagePoint03_ImagePoint03.001.patch"  # todo: find path name with endig .patch
     pwd = os.path.split(os.path.abspath(sys.argv[0]))[0]  # current dir  
     patchPath = os.path.join(pwd, patchName) 
     
@@ -31,16 +32,16 @@ def findPatchFilePath():
 
 def findGitPath():
     "Searches for the path of the git repo"
-    packageName = "ohm_pf" #todo: package name is not fix
+    packageName = "ohm_bob_drive"  # todo: package name is not fix
     command = "rospack find " + packageName
     if (os.system(command + "> /dev/null") == 0):
         pipe = os.popen(command)
         content = pipe.read()
         content = content.rstrip("\n")
         gitPath = os.path.normpath(content)
+        gitPath = os.path.split(os.path.split(os.path.split(gitPath)[0])[0])[0] # in case of bobbyrob catkin is ../../../ from packages
         return gitPath;
         # todo: check for active git repo here
-        #catkinPath = os.path.split(os.path.split(gitPath)[0])[0]  # in case of bobbyrob catkin is ../../ from packages
     else:
         print "can't find package location --> exit"
         exit(1)
@@ -99,7 +100,6 @@ def compileCatkin(catkinPath):
         return 1;
 
 if __name__ == '__main__':   
-
     # start logfile
     os.system("echo \"\n\n**** log at: \" >> ./log")
     os.system("date >> ./log")
@@ -110,24 +110,28 @@ if __name__ == '__main__':
     
     catkinPath = os.path.split(os.path.split(gitPath)[0])[0]
         
-    #resetGit(gitPath, SHA = "414034972eb5d062140c3fb291e7d0880c48937a")
+    # resetGit(gitPath, SHA = "414034972eb5d062140c3fb291e7d0880c48937a")
     
     rollbackSha = getCurrentSHA(gitPath)
+    
+    resetGit(gitPath, SHA="f5a94f3baac2828f04d97a6ede2de01580fdeb7d")
    
-    if( applyPatch(gitPath, patchPath) == 0):
-        if( compileCatkin(catkinPath) == 0):
+    if(applyPatch(gitPath, patchPath) == 0):
+        if(compileCatkin(catkinPath) == 0):
             print "\n+++++++++++++++++++"
             print "+  patching done  +"
             print "+++++++++++++++++++"
+            
+            print "\n--> please reboot now!"
             exit(0)
     
     # if we are here patch does not fit...       
     print "reverting patch..."
-    resetGit(gitPath, SHA = "414034972eb5d062140c3fb291e7d0880c48937a")
+    resetGit(gitPath, SHA=rollbackSha)
     print "patch reverted!"
     
     
-    if( compileCatkin(catkinPath) == 0):
+    if(compileCatkin(catkinPath) == 0):
         print "sorry, patch cannot be applied --> finished clean"
         exit(0)
     else: 
